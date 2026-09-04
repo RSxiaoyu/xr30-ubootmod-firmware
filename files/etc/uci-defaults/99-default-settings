@@ -4,10 +4,12 @@
 # 实现开箱即用：硬件流控、ZRAM 防护、Wi-Fi 调优、BBR
 # --------------------------------------------------------
 
-# 1. 硬件加速 (PPE) 全开
+# 1. 硬件加速 (PPE) 全开与主机名规范
 uci set firewall.@defaults[0].flow_offloading='1'
 uci set firewall.@defaults[0].flow_offloading_hw='1'
 uci commit firewall
+uci set system.@system[0].hostname='XR30'
+uci commit system
 
 # 2. 开启 BBR 拥塞控制
 cat << 'EOF' > /etc/sysctl.d/99-custom-net.conf

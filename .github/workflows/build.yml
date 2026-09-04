@@ -1,12 +1,17 @@
-name: Build XR30 Modern Firmware
+name: Build XR30 Pure Open-Source Firmware
 
 on:
   workflow_dispatch:
     inputs:
+      version:
+        description: 'ImmortalWrt 版本 (输入 latest 自动探测最新官方稳定版，或输入 master / openwrt-25.12)'
+        required: false
+        default: 'latest'
+        type: string
       release:
         description: '是否发布到 GitHub Releases'
         required: false
-        default: 'true'
+        default: true
         type: boolean
   push:
     paths:
@@ -19,8 +24,8 @@ permissions:
   contents: write
 
 env:
-  REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-24.10
-  REPO_BRANCH: openwrt-24.10-6.6
+  REPO_URL: https://github.com/immortalwrt/immortalwrt.git
+  FALLBACK_BRANCH: openwrt-25.12
   TZ: Asia/Shanghai
 
 jobs:
@@ -35,12 +40,32 @@ jobs:
           sudo timedatectl set-timezone "$TZ"
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential clang flex bison gawk gettext \
-            git libncurses-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget
+            git libncurses-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget jq
           sudo apt-get clean
 
-      - name: 浅层克隆上游源码
+      - name: 动态探查并解析最新官方版本
+        id: resolve_version
         run: |
-          git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
+          INPUT_VER="${{ inputs.version }}"
+          if [ -z "$INPUT_VER" ] || [ "$INPUT_VER" = "latest" ]; then
+            echo "[*] 正在请求 GitHub API 嗅探官方最新稳定 Release..."
+            LATEST_TAG=$(curl -sL https://api.github.com/repos/immortalwrt/immortalwrt/releases/latest | jq -r .tag_name 2>/dev/null || true)
+            if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "null" ]; then
+              TARGET_REF="$LATEST_TAG"
+            else
+              TARGET_REF="$FALLBACK_BRANCH"
+            fi
+          else
+            TARGET_REF="$INPUT_VER"
+          fi
+          echo "RESOLVED_REF=$TARGET_REF" >> $GITHUB_ENV
+          echo "========================================="
+          echo "🚀 最终锁定的官方构建基线: $TARGET_REF"
+          echo "========================================="
+
+      - name: 浅层克隆官方纯正源码
+        run: |
+          git clone --depth 1 -b $RESOLVED_REF $REPO_URL openwrt
 
       - name: 依赖下载缓存 (大幅加速编译)
         uses: actions/cache@v4
@@ -56,7 +81,7 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 应用极简定制脚本与开箱即用配置
+      - name: 应用极简定制脚本与 UbootMod 设备树调整
         run: |
           chmod +x scripts/custom.sh
           cd openwrt
@@ -91,31 +116,38 @@ jobs:
           mkdir -p $GITHUB_WORKSPACE/release_firmware
           cd openwrt/bin/targets/mediatek/filogic
           # 收集核心固件与 sysupgrade 文件
-          cp -f *xr30* $GITHUB_WORKSPACE/release_firmware/ 2>/dev/null || cp -f *sysupgrade.bin $GITHUB_WORKSPACE/release_firmware/ 2>/dev/null || true
+          cp -f *rax3000m* $GITHUB_WORKSPACE/release_firmware/ 2>/dev/null || cp -f *sysupgrade* $GITHUB_WORKSPACE/release_firmware/ 2>/dev/null || true
           cd $GITHUB_WORKSPACE/release_firmware
+          # 自动为用户生成专属的 XR30-UbootMod 友好命名的副本
+          for f in *rax3000m*sysupgrade*; do
+            if [ -f "$f" ]; then
+              cp "$f" "$(echo "$f" | sed 's/cmcc_rax3000m/cmcc_xr30-ubootmod/g')" 2>/dev/null || true
+            fi
+          done
           sha256sum * > sha256sums.txt
-          echo "RELEASE_TAG=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_ENV
+          echo "RELEASE_TAG=$(date +"%Y.%m.%d-%H%M")-${{ env.RESOLVED_REF }}" >> $GITHUB_ENV
           echo "STATUS=success" >> $GITHUB_OUTPUT
 
       - name: 上传构建产物 (Artifacts)
         uses: actions/upload-artifact@v4
         with:
-          name: XR30-UbootMod-OpenWrt-${{ env.RELEASE_TAG }}
+          name: XR30-UbootMod-${{ env.RESOLVED_REF }}
           path: release_firmware/*
 
       - name: 自动发布至 GitHub Releases
-        if: github.event.inputs.release == 'true' || github.event_name == 'push'
+        if: github.event.inputs.release == 'true' || github.event.inputs.release == '' || github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: "XR30 极速现代固件 ${{ env.RELEASE_TAG }}"
+          name: "XR30 官方开源纯血固件 (${{ env.RESOLVED_REF }})"
           body: |
-            ### 🚀 XR30 极客专属固件构建完成
-            - **底座架构**：Linux 6.6 (MT7981B / Filogic 820)
-            - **无线驱动**：纯粹开源 `kmod-mt76` + WED 硬件加速
-            - **网络加速**：PPE 硬件流控全开，跑满千兆 0% CPU 占用
-            - **核心组件**：sing-box、ZRAM (zstd) 内存压缩防护、nftables (fw4)
-            - **引导要求**：必须在 **UbootMod** (大分区 122.5MB) 下刷入
+            ### 🚀 XR30 官方开源纯血固件构建完成
+            - **官方基线**：`${{ env.RESOLVED_REF }}` (基于 `immortalwrt/immortalwrt` 官方纯血源码动态探查)
+            - **无线驱动**：100% 官方开源 `kmod-mt76` + WED 硬件加速（零闭源杂质，延迟极佳）
+            - **硬件流控**：PPE 硬件 NAT 卸载全开，千兆跑满 0% CPU 占用
+            - **内存防御**：ZRAM 128MB (`zstd` 极速动态压缩)
+            - **网络分流**：`sing-box` (TProxy + Fake-IP) + `fw4` (nftables)
+            - **引导适配**：已在设备树中自动适配 **UbootMod** (大分区 122.5MB)
           files: release_firmware/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
