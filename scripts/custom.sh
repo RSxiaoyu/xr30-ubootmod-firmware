@@ -13,9 +13,16 @@ find target/linux/mediatek/ -name "*rax3000m*.dts*" -exec sed -i 's/0x580000 0x7
 # 2. 默认管理 IP 设置 (192.168.1.1)
 sed -i 's/192.168.1.1/192.168.1.1/g' package/base-files/files/bin/config_generate
 
-# 3. 升级官方 Feed 中的 sing-box 至最新的 1.14.0
-sed -i 's/PKG_VERSION:=1.12.25/PKG_VERSION:=1.14.0/g' feeds/packages/net/sing-box/Makefile
-sed -i 's/PKG_HASH:=881435f07b5ab8170ccf3cb69e87130759521dc0ed1ae4bfeacbe7772a93a158/PKG_HASH:=87baf6852e37941cbe40bdd94bec81c957c88a56751cecd6bbf0e6108bc69398/g' feeds/packages/net/sing-box/Makefile
+# 3. 动态探查 SagerNet/sing-box 最新正式版 (latest)，自动平滑接入官方 Feed
+echo "[*] 正在动态探查 SagerNet/sing-box 最新官方 Release..."
+LATEST_SB_TAG=$(curl -sL --connect-timeout 5 --retry 3 https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | head -n 1 | sed -E 's/.*"v?([^"]+)".*/\1/' || true)
+if [ -n "$LATEST_SB_TAG" ]; then
+    echo "[*] 动态解析到最新 Sing-Box 版本: v$LATEST_SB_TAG"
+    sed -i "s/PKG_VERSION:=.*/PKG_VERSION:=$LATEST_SB_TAG/g" feeds/packages/net/sing-box/Makefile
+    sed -i "s/PKG_HASH:=.*/PKG_HASH:=skip/g" feeds/packages/net/sing-box/Makefile
+else
+    echo "[!] 动态探查超时，保留 Feed 默认版本"
+fi
 
 # 4. 修复 GNU Make 4.4+ 下 Ninja 被误限为单核 -j1 的问题，释放全核并发
 sed -i 's/\$(if \$(MAKE_JOBSERVER),,-j1)//g' rules.mk
