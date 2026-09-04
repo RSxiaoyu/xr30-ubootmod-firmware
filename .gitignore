@@ -12,3 +12,4 @@ dl/
 release_firmware/
 .vscode/
 .idea/
+.agents/

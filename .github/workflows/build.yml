@@ -146,7 +146,7 @@ jobs:
             - **无线驱动**：100% 官方开源 `kmod-mt76` + WED 硬件加速（零闭源杂质，延迟极佳）
             - **硬件流控**：PPE 硬件 NAT 卸载全开，千兆跑满 0% CPU 占用
             - **内存防御**：ZRAM 128MB (`zstd` 极速动态压缩)
-            - **网络分流**：`sing-box` (TProxy + Fake-IP) + `fw4` (nftables)
+            - **网络分流**：官方 `HomeProxy` 代理平台 + `sing-box` (TProxy + Fake-IP) + `fw4` (nftables)
             - **引导适配**：已在设备树中自动适配 **UbootMod** (大分区 122.5MB)
           files: release_firmware/*
         env:
