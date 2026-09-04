@@ -10,7 +10,7 @@
 - **纯粹开源无线**：`kmod-mt76` (mac80211) + WED 硬件加速，5GHz 默认 160MHz (信道 36)
 - **硬件卸载**：PPE 硬件 NAT 卸载 (千兆/300M 跑满 0% CPU) + BBR
 - **内存防御**：ZRAM 128MB (`zstd` 算法高倍率动态压缩)，彻底杜绝 256MB 内存 OOM
-- **网络分流**：`sing-box` (TProxy + Fake-IP) + `fw4` (nftables)
+- **网络分流**：官方 `HomeProxy` 现代化代理平台 + `sing-box 1.14` (TProxy + Fake-IP) + `fw4` (nftables)
 - **管理界面**：Argon 主题
 
 ## 刷机说明
