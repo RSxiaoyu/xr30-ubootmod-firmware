@@ -19,4 +19,7 @@ if [ ! -d "package/feeds/luci/luci-app-sing-box" ] && [ ! -d "package/luci-app-s
     git clone --depth 1 https://github.com/satflow/luci-app-sing-box.git package/luci-app-sing-box 2>/dev/null || true
 fi
 
+# 4. 修复 GNU Make 4.4+ 下 Ninja 被误限为单核 -j1 的问题，释放全核并发
+sed -i 's/\$(if \$(MAKE_JOBSERVER),,-j1)//g' rules.mk
+
 echo "[*] 官方源码适配完成。"
