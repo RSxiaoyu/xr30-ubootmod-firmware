@@ -1,0 +1,14 @@
+# OpenWrt 临时编译产物
+bin/
+build_dir/
+staging_dir/
+toolchain/
+tmp/
+dl/
+.config*
+*.orig
+*.rej
+*.log
+release_firmware/
+.vscode/
+.idea/
