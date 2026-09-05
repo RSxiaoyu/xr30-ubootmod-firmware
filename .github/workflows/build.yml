@@ -1,24 +1,16 @@
-name: Build XR30 Pure Open-Source Firmware
+name: Build XR30 Firmware
 
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'ImmortalWrt 版本 (输入 latest 自动探测最新官方稳定版，或输入 master / openwrt-25.12)'
+      ref:
+        description: 'ImmortalWrt ref（默认 openwrt-25.12 稳定分支，可填 master 等）'
         required: false
-        default: 'latest'
+        default: 'openwrt-25.12'
         type: string
-      release:
-        description: '是否发布到 GitHub Releases'
-        required: false
-        default: true
-        type: boolean
   push:
-    paths:
-      - 'config/**'
-      - 'scripts/**'
-      - 'files/**'
-      - '.github/workflows/**'
+    branches: [main]
+    paths: ['config/**', 'files/**', '.github/workflows/**']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,131 +19,78 @@ concurrency:
 permissions:
   contents: write
 
-env:
-  REPO_URL: https://github.com/immortalwrt/immortalwrt.git
-  FALLBACK_BRANCH: openwrt-25.12
-  TZ: Asia/Shanghai
-
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    name: Build (mediatek/filogic)
+    runs-on: ubuntu-24.04
     steps:
-      - name: 检出当前仓库
+      - name: 检出仓库
         uses: actions/checkout@v4
 
-      - name: 初始化编译环境
+      - name: 安装编译依赖
         run: |
-          sudo timedatectl set-timezone "$TZ"
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential clang flex bison gawk gettext \
-            git libncurses-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget jq
-          sudo apt-get clean
+            git libncurses-dev libssl-dev rsync unzip zlib1g-dev file wget
 
-      - name: 动态探查并解析最新官方版本
-        id: resolve_version
+      - name: 克隆 ImmortalWrt 源码
         run: |
-          INPUT_VER="${{ inputs.version }}"
-          if [ -z "$INPUT_VER" ] || [ "$INPUT_VER" = "latest" ]; then
-            echo "[*] 正在请求 GitHub API 嗅探官方最新稳定 Release..."
-            LATEST_TAG=$(curl -sL https://api.github.com/repos/immortalwrt/immortalwrt/releases/latest | jq -r .tag_name 2>/dev/null || true)
-            if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "null" ]; then
-              TARGET_REF="$LATEST_TAG"
-            else
-              TARGET_REF="$FALLBACK_BRANCH"
-            fi
-          else
-            TARGET_REF="$INPUT_VER"
-          fi
-          echo "RESOLVED_REF=$TARGET_REF" >> $GITHUB_ENV
-          echo "========================================="
-          echo "🚀 最终锁定的官方构建基线: $TARGET_REF"
-          echo "========================================="
+          git clone --depth 1 -b ${{ inputs.ref || 'openwrt-25.12' }} \
+            https://github.com/immortalwrt/immortalwrt.git openwrt
 
-      - name: 浅层克隆官方纯正源码
-        run: |
-          git clone --depth 1 -b $RESOLVED_REF $REPO_URL openwrt
-
-      - name: 依赖下载缓存 (大幅加速编译)
+      - name: 缓存依赖源码包
         uses: actions/cache@v4
         with:
           path: openwrt/dl
-          key: ${{ runner.os }}-openwrt-dl-${{ hashFiles('config/xr30-seed.config') }}
-          restore-keys: |
-            ${{ runner.os }}-openwrt-dl-
+          key: dl-${{ hashFiles('config/xr30-seed.config') }}
+          restore-keys: dl-
 
-      - name: 更新与安装 Feeds
+      - name: 更新安装 Feeds
         working-directory: openwrt
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 应用极简定制脚本与 UbootMod 设备树调整
-        run: |
-          chmod +x scripts/custom.sh
-          cd openwrt
-          ../scripts/custom.sh
-          if [ -d ../files ]; then
-            mkdir -p files
-            cp -rf ../files/* files/
-            chmod -R +x files/etc/uci-defaults/ 2>/dev/null || true
-          fi
+      - name: 写入首启默认配置
+        run: mkdir -p openwrt/files && cp -r files/. openwrt/files/
 
-      - name: 合并种子配置生成编译配置
+      - name: 生成编译配置
         working-directory: openwrt
         run: |
-          cp -f ../config/xr30-seed.config .config
+          cp ../config/xr30-seed.config .config
           make defconfig
 
-      - name: 预下载依赖包
+      - name: 预下载源码包
         working-directory: openwrt
         run: |
-          make download -j8
-          find dl -size -1024c -exec rm -f {} +
+          make download -j$(nproc)
+          find dl -type f -size -1024c -delete
+          make download -j$(nproc)
 
-      - name: 全核极速并发编译
+      - name: 全核编译
         working-directory: openwrt
+        run: make -j$(nproc) || make -j1 V=s
+
+      - name: 整理产物
         run: |
-          echo "CPU 核心数: $(nproc)"
-          make -j$(nproc) || make -j1 V=s
+          mkdir -p release_firmware
+          cp openwrt/bin/targets/mediatek/filogic/*rax3000m* release_firmware/
+          sha256sum release_firmware/* > release_firmware/sha256sums.txt
+          echo "TAG=$(date -u +%Y.%m.%d-%H%M)-${{ inputs.ref || 'openwrt-25.12' }}" >> "$GITHUB_ENV"
 
-      - name: 收集与整理固件产物
-        id: organize
-        run: |
-          mkdir -p $GITHUB_WORKSPACE/release_firmware
-          cd openwrt/bin/targets/mediatek/filogic
-          # 收集核心固件与 sysupgrade 文件
-          cp -f *rax3000m* $GITHUB_WORKSPACE/release_firmware/ 2>/dev/null || cp -f *sysupgrade* $GITHUB_WORKSPACE/release_firmware/ 2>/dev/null || true
-          cd $GITHUB_WORKSPACE/release_firmware
-          # 自动为用户生成专属的 XR30-UbootMod 友好命名的副本
-          for f in *rax3000m*sysupgrade*; do
-            if [ -f "$f" ]; then
-              cp "$f" "$(echo "$f" | sed 's/cmcc_rax3000m/cmcc_xr30-ubootmod/g')" 2>/dev/null || true
-            fi
-          done
-          sha256sum * > sha256sums.txt
-          echo "RELEASE_TAG=$(date +"%Y.%m.%d-%H%M")-${{ env.RESOLVED_REF }}" >> $GITHUB_ENV
-          echo "STATUS=success" >> $GITHUB_OUTPUT
-
-      - name: 上传构建产物 (Artifacts)
-        uses: actions/upload-artifact@v4
-        with:
-          name: XR30-UbootMod-${{ env.RESOLVED_REF }}
-          path: release_firmware/*
-
-      - name: 自动发布至 GitHub Releases
-        if: github.event.inputs.release == 'true' || github.event.inputs.release == '' || github.event_name == 'push'
+      - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: "XR30 官方开源纯血固件 (${{ env.RESOLVED_REF }})"
+          tag_name: ${{ env.TAG }}
+          name: XR30 · ImmortalWrt ${{ inputs.ref || 'openwrt-25.12' }}
           body: |
-            ### 🚀 XR30 官方开源纯血固件构建完成
-            - **官方基线**：`${{ env.RESOLVED_REF }}` (基于 `immortalwrt/immortalwrt` 官方纯血源码动态探查)
-            - **无线驱动**：100% 官方开源 `kmod-mt76` + WED 硬件加速（零闭源杂质，延迟极佳）
-            - **硬件流控**：PPE 硬件 NAT 卸载全开，千兆跑满 0% CPU 占用
-            - **内存防御**：ZRAM 128MB (`zstd` 极速动态压缩)
-            - **网络分流**：官方 `HomeProxy` 代理平台 + `sing-box` (TProxy + Fake-IP) + `fw4` (nftables)
-            - **引导适配**：已在设备树中自动适配 **UbootMod** (大分区 122.5MB)
+            ImmortalWrt `${{ inputs.ref || 'openwrt-25.12' }}` 官方源码 · 设备 `cmcc_rax3000m`（中国移动 XR30 孪生机型）· 官方 U-Boot 布局，零补丁。
+
+            - 内置：HomeProxy（sing-box）· Argon · htop/curl
+            - 首启默认：PPE 硬件 NAT 卸载 · BBR · ZRAM(zstd)
+            - Wi-Fi 信道 / 频宽 / SSID：开机后在 LuCI 设置
+            - 刷机路径与 bootloader 要求见仓库 README（须支持 FIT 多配置引导）
+            - 校验：`sha256sums.txt`
           files: release_firmware/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
