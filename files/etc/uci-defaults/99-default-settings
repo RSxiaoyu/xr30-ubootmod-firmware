@@ -1,64 +1,16 @@
 #!/bin/sh
-# --------------------------------------------------------
-# 首次开机自运行配置脚本 (执行后自动销毁)
-# 实现开箱即用：硬件流控、ZRAM 防护、Wi-Fi 调优、BBR
-# --------------------------------------------------------
+# 首次开机执行一次。只保留设备级的通用决策；
+# Wi-Fi（信道/频宽/SSID）、主题等个人项依赖上游默认，开机后在 LuCI 自行设置。
 
-# 1. 硬件加速 (PPE) 全开与主机名规范
+# 硬件 NAT 卸载（mt7981 PPE + WED；上游默认关闭）
 uci set firewall.@defaults[0].flow_offloading='1'
 uci set firewall.@defaults[0].flow_offloading_hw='1'
 uci commit firewall
+
+# 主机名；ZRAM 压缩算法 zstd（init 脚本默认强制 lzo）
 uci set system.@system[0].hostname='XR30'
+uci set system.@system[0].zram_comp_algo='zstd'
 uci commit system
 
-# 2. 开启 BBR 拥塞控制
-cat << 'EOF' > /etc/sysctl.d/99-custom-net.conf
-net.core.default_qdisc = fq_codel
-net.ipv4.tcp_congestion_control = bbr
-vm.swappiness = 60
-vm.vfs_cache_pressure = 50
-EOF
-sysctl -p /etc/sysctl.d/99-custom-net.conf 2>/dev/null || true
-
-# 3. 配置 ZRAM 128MB 极速动态压缩
-if [ -f /etc/config/zramswap ]; then
-    uci set zramswap.zram0.enabled='1'
-    uci set zramswap.zram0.compression_algo='zstd'
-    uci set zramswap.zram0.zram_size_mb='128'
-    uci set zramswap.zram0.priority='100'
-    uci commit zramswap
-    /etc/init.d/zramswap restart 2>/dev/null || true
-fi
-
-# 4. 默认开启 Wi-Fi 并优化 5G 频段 (避免默认关闭 Wi-Fi 的尴尬)
-if [ -f /etc/config/wireless ]; then
-    # 启用所有无线接口
-    uci set wireless.radio0.disabled='0'
-    uci set wireless.radio1.disabled='0'
-
-    # 识别并优化 5G 射频 (通常为 5GHz 频段的 radio)
-    for dev in $(uci show wireless | grep '=wifi-device' | cut -d'.' -f2 | cut -d'=' -f1); do
-        band=$(uci -q get wireless.${dev}.band)
-        htmode=$(uci -q get wireless.${dev}.htmode)
-        if [ "$band" = "5g" ] || echo "$htmode" | grep -qi "HE"; then
-            # 5G 固定 160MHz，选择低频 36 信道（避开 DFS 雷达干扰）
-            uci set wireless.${dev}.channel='36'
-            uci set wireless.${dev}.htmode='HE160'
-            uci set wireless.${dev}.country='CN'
-        else
-            # 2.4G 固定 20MHz 窄频宽（防宿舍严重干扰）
-            uci set wireless.${dev}.htmode='HE20'
-            uci set wireless.${dev}.country='CN'
-        fi
-    done
-    uci commit wireless
-    wifi reload 2>/dev/null || true
-fi
-
-# 5. 设置默认主题为 Argon
-if [ -d /www/luci-static/argon ]; then
-    uci set luci.main.mediaurlbase='/luci-static/argon'
-    uci commit luci
-fi
-
-exit 0
+# BBR（默认 cubic）
+printf 'net.ipv4.tcp_congestion_control = bbr\n' > /etc/sysctl.d/99-bbr.conf
